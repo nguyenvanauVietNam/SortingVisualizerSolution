@@ -1,13 +1,11 @@
 # SortingVisualizerSolution
 
 ## Demo GIF / GIF minh họa / デモGIF
+![Sorting visualizer introduction](./introdue.gif)
 
-<!--
-Ví dụ / Example / 例:
-![Sorting Visualizer Demo](Resources/demo.gif)
--->
+## Multilang
 
----
+![Multi-language interface](./multilang.gif)
 
 ## Tiếng Việt
 
