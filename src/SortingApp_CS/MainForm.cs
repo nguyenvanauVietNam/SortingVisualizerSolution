@@ -57,6 +57,7 @@ namespace SortingApp_CS
         private bool isSorting;
         private bool hasCompletedResult;
         private bool isInputPlaceholderActive;
+        private bool isFormClosing;
         private IntPtr cancellationFlag = IntPtr.Zero;
         private InteropHelper.UpdateCallback nativeCallback;
         private GCHandle nativeCallbackHandle;
@@ -73,6 +74,8 @@ namespace SortingApp_CS
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            RequestCancellation();
+            isFormClosing = true;
             ReleaseNativeResources();
             base.OnFormClosed(e);
         }
@@ -134,11 +137,11 @@ namespace SortingApp_CS
 
             speedNumericUpDown = new NumericUpDown
             {
-                Minimum = 0,
-                Maximum = 10000,
-                Increment = 10,
-                Value = 60,
-                Width = 84
+                Minimum = 200,// Set a minimum value for speed
+                Maximum = 100000, // Set a maximum value for speed
+                Increment = 100,// Set the increment step for speed
+                Value = 1000,// Set the default value for speed
+                Width = 84// Set the width of the NumericUpDown control
             };
 
             outputTextBox = new TextBox
@@ -291,18 +294,25 @@ namespace SortingApp_CS
 
         private void LoadLocalization()
         {
-            string path = ResolvePath(Path.Combine("Languages", "localization.xml"));
-            XDocument document = XDocument.Load(path);
-
-            foreach (XElement languageElement in document.Root.Elements("language"))
+            try
             {
-                string code = (string)languageElement.Attribute("code");
-                string name = (string)languageElement.Attribute("name");
-                string flag = (string)languageElement.Attribute("flag");
+                string path = ResolvePath(Path.Combine("Languages", "localization.xml"));
+                XDocument document = XDocument.Load(path);
 
-                languages[code] = new LanguageInfo(code, name, flag);
-                localizedTexts[code] = languageElement.Elements("text")
-                    .ToDictionary(item => (string)item.Attribute("key"), item => item.Value);
+                foreach (XElement languageElement in document.Root.Elements("language"))
+                {
+                    string code = (string)languageElement.Attribute("code");
+                    string name = (string)languageElement.Attribute("name");
+                    string flag = (string)languageElement.Attribute("flag");
+
+                    languages[code] = new LanguageInfo(code, name, flag);
+                    localizedTexts[code] = languageElement.Elements("text")
+                        .ToDictionary(item => (string)item.Attribute("key"), item => item.Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Unable to load localization resources.", ex);
             }
         }
 
@@ -455,10 +465,17 @@ namespace SortingApp_CS
 
         private void LoadBackgroundImage()
         {
-            string path = ResolvePath(backgroundImagePath);
-            if (File.Exists(path))
+            try
             {
-                visualizationPanel.BackgroundImage = Image.FromFile(path);
+                string path = ResolvePath(backgroundImagePath);
+                if (File.Exists(path))
+                {
+                    visualizationPanel.BackgroundImage = Image.FromFile(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorLoadBackgroundImage", ex);
             }
         }
 
@@ -486,28 +503,35 @@ namespace SortingApp_CS
 
         private void SubmitButton_Click(object sender, EventArgs e)
         {
-            if (isSorting)
+            try
             {
-                return;
-            }
+                if (isSorting)
+                {
+                    return;
+                }
 
-            int[] parsedValues;
-            if (isInputPlaceholderActive || !TryParseInput(inputTextBox.Text, out parsedValues))
+                int[] parsedValues;
+                if (isInputPlaceholderActive || !TryParseInput(inputTextBox.Text, out parsedValues))
+                {
+                    MessageBox.Show(GetText("InvalidInput"), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                currentValues = parsedValues;
+                originalInputValues = parsedValues.ToArray();
+                isInputPlaceholderActive = false;
+                inputTextBox.ForeColor = SystemColors.WindowText;
+                sortedValues = new int[0];
+                hasCompletedResult = false;
+                outputTextBox.Clear();
+                ClearSortHistory();
+                RenderElements(currentValues, -1, -1, idleColor, Color.White);
+                statusLabel.Text = string.Empty;
+            }
+            catch (Exception ex)
             {
-                MessageBox.Show(GetText("InvalidInput"), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                ShowOperationError("ErrorCreateDataSet", ex);
             }
-
-            currentValues = parsedValues;
-            originalInputValues = parsedValues.ToArray();
-            isInputPlaceholderActive = false;
-            inputTextBox.ForeColor = SystemColors.WindowText;
-            sortedValues = new int[0];
-            hasCompletedResult = false;
-            outputTextBox.Clear();
-            ClearSortHistory();
-            RenderElements(currentValues, -1, -1, idleColor, Color.White);
-            statusLabel.Text = string.Empty;
         }
 
         private void InputTextBox_Enter(object sender, EventArgs e)
@@ -565,19 +589,27 @@ namespace SortingApp_CS
 
         private async void StartStopButton_Click(object sender, EventArgs e)
         {
-            if (isSorting)
+            try
             {
-                RequestCancellation();
-                return;
-            }
+                if (isSorting)
+                {
+                    RequestCancellation();
+                    return;
+                }
 
-            if (currentValues.Length == 0)
+                if (currentValues.Length == 0)
+                {
+                    MessageBox.Show(GetText("NoData"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                await StartSortingAsync();
+            }
+            catch (Exception ex)
             {
-                MessageBox.Show(GetText("NoData"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                ShowOperationError("ErrorStartStopSorting", ex);
+                SetSortingState(false);
             }
-
-            await StartSortingAsync();
         }
 
         private async Task StartSortingAsync()
@@ -627,17 +659,24 @@ namespace SortingApp_CS
             }
             catch (DllNotFoundException)
             {
-                MessageBox.Show("SortingLogic_CPP.dll was not found next to the application executable.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(GetText("ErrorDllNotFound"), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch (BadImageFormatException)
             {
-                MessageBox.Show("The C++ DLL platform does not match the C# application platform.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(GetText("ErrorDllPlatformMismatch"), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorUnexpectedSorting", ex);
             }
             finally
             {
                 currentDelayMilliseconds = 0;
                 SetSortingState(false);
-                Marshal.WriteByte(cancellationFlag, 0);
+                if (cancellationFlag != IntPtr.Zero)
+                {
+                    Marshal.WriteByte(cancellationFlag, 0);
+                }
             }
         }
 
@@ -673,46 +712,91 @@ namespace SortingApp_CS
 
         private void RequestCancellation()
         {
-            if (cancellationFlag != IntPtr.Zero)
-            {
-                Marshal.WriteByte(cancellationFlag, 1);
-            }
-
-            startStopButton.Enabled = false;
-        }
-
-        private void NativeUpdateCallback(IntPtr arrayPointer, int size, int activeIdx1, int activeIdx2)
-        {
-            if (IsDisposed || arrayPointer == IntPtr.Zero || size <= 0)
+            if (isFormClosing)
             {
                 return;
             }
 
-            int[] snapshot = new int[size];
-            Marshal.Copy(arrayPointer, snapshot, 0, size);
-
-            Action updateAction = () =>
+            if (cancellationFlag != IntPtr.Zero)
             {
-                int[] previousValues = currentValues;
-                bool shouldAnimateSwap = ShouldAnimateSwap(previousValues, snapshot, activeIdx1, activeIdx2);
-                currentValues = snapshot;
-                AppendSortHistoryStep(snapshot, activeIdx1, activeIdx2);
-
-                if (shouldAnimateSwap)
+                try
                 {
-                    AnimateSwapTransition(previousValues, snapshot, activeIdx1, activeIdx2);
+                    Marshal.WriteByte(cancellationFlag, 1);
+                }
+                catch
+                {
+                    return;
+                }
+            }
+
+            if (startStopButton != null && !startStopButton.IsDisposed)
+            {
+                startStopButton.Enabled = false;
+            }
+        }
+
+        private void NativeUpdateCallback(IntPtr arrayPointer, int size, int activeIdx1, int activeIdx2)
+        {
+            if (IsDisposed || isFormClosing || arrayPointer == IntPtr.Zero || size <= 0)
+            {
+                return;
+            }
+
+            try
+            {
+                int[] snapshot = new int[size];
+                Marshal.Copy(arrayPointer, snapshot, 0, size);
+
+                Action updateAction = () =>
+                {
+                    if (IsDisposed || isFormClosing)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        int[] previousValues = currentValues;
+                        bool shouldAnimateSwap = ShouldAnimateSwap(previousValues, snapshot, activeIdx1, activeIdx2);
+                        currentValues = snapshot;
+                        AppendSortHistoryStep(snapshot, activeIdx1, activeIdx2);
+
+                        if (shouldAnimateSwap)
+                        {
+                            AnimateSwapTransition(previousValues, snapshot, activeIdx1, activeIdx2);
+                        }
+
+                        RenderElements(snapshot, activeIdx1, activeIdx2, idleColor, Color.White);
+                    }
+                    catch (Exception ex)
+                    {
+                        ShowOperationError("ErrorUpdateVisualization", ex, false);
+                    }
+                };
+
+                if (visualizationPanel.IsDisposed || !visualizationPanel.IsHandleCreated)
+                {
+                    return;
                 }
 
-                RenderElements(snapshot, activeIdx1, activeIdx2, idleColor, Color.White);
-            };
-
-            if (visualizationPanel.InvokeRequired)
-            {
-                visualizationPanel.Invoke(updateAction);
+                if (visualizationPanel.InvokeRequired)
+                {
+                    visualizationPanel.Invoke(updateAction);
+                }
+                else
+                {
+                    updateAction();
+                }
             }
-            else
+            catch (ObjectDisposedException)
             {
-                updateAction();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorProcessNativeData", ex, false);
             }
         }
 
@@ -729,6 +813,12 @@ namespace SortingApp_CS
             for (int i = 0; i < elementButtons.Count; i++)
             {
                 Button button = elementButtons[i];
+                if (i >= values.Length)
+                {
+                    button.Visible = false;
+                    continue;
+                }
+
                 bool isActive = i == activeIdx1 || i == activeIdx2;
                 int rowCapacity = Math.Max(1, availableWidth / (buttonWidth + spacing));
                 int row = i / rowCapacity;
@@ -817,19 +907,27 @@ namespace SortingApp_CS
 
         private Button CreateAnimationButton(int value, Rectangle bounds)
         {
-            Button button = new Button
+            try
             {
-                Text = value.ToString(CultureInfo.InvariantCulture),
-                Bounds = bounds,
-                BackColor = movingColor,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font(Font, FontStyle.Bold),
-                UseVisualStyleBackColor = false
-            };
+                Button button = new Button
+                {
+                    Text = value.ToString(CultureInfo.InvariantCulture),
+                    Bounds = bounds,
+                    BackColor = movingColor,
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font(Font, FontStyle.Bold),
+                    UseVisualStyleBackColor = false
+                };
 
-            button.FlatAppearance.BorderColor = Color.White;
-            return button;
+                button.FlatAppearance.BorderColor = Color.White;
+                return button;
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorCreateAnimationButton", ex);
+                throw;
+            }
         }
 
         private int Interpolate(int start, int end, float progress)
@@ -846,55 +944,70 @@ namespace SortingApp_CS
 
         private void EnsureElementButtonCount(int count)
         {
-            while (elementButtons.Count < count)
+            try
             {
-                Button button = new Button
+                while (elementButtons.Count < count)
                 {
-                    FlatStyle = FlatStyle.Flat,
-                    Font = new Font(Font, FontStyle.Bold),
-                    UseVisualStyleBackColor = false
-                };
+                    Button button = new Button
+                    {
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font(Font, FontStyle.Bold),
+                        UseVisualStyleBackColor = false
+                    };
 
-                button.FlatAppearance.BorderColor = Color.White;
-                button.Click += ElementButton_Click;
-                elementButtons.Add(button);
-                visualizationPanel.Controls.Add(button);
+                    button.FlatAppearance.BorderColor = Color.White;
+                    button.Click += ElementButton_Click;
+                    elementButtons.Add(button);
+                    visualizationPanel.Controls.Add(button);
+                }
+
+                for (int i = 0; i < elementButtons.Count; i++)
+                {
+                    elementButtons[i].Visible = i < count;
+                }
             }
-
-            for (int i = 0; i < elementButtons.Count; i++)
+            catch (Exception ex)
             {
-                elementButtons[i].Visible = i < count;
+                ShowOperationError("ErrorCreateElementButtons", ex);
+                throw;
             }
         }
 
         private void ElementButton_Click(object sender, EventArgs e)
         {
-            if (isSorting)
+            try
             {
-                return;
-            }
-
-            Button button = sender as Button;
-            int index = elementButtons.IndexOf(button);
-            if (index < 0 || index >= currentValues.Length)
-            {
-                return;
-            }
-
-            using (ValuePromptForm prompt = new ValuePromptForm(GetText("EditValueTitle"), GetText("EditValuePrompt"), currentValues[index], GetText("OkButton"), GetText("CancelButton")))
-            {
-                if (prompt.ShowDialog(this) == DialogResult.OK)
+                if (isSorting)
                 {
-                    currentValues[index] = prompt.Value;
-                    originalInputValues = currentValues.ToArray();
-                    isInputPlaceholderActive = false;
-                    inputTextBox.ForeColor = SystemColors.WindowText;
-                    inputTextBox.Text = string.Join(", ", currentValues);
-                    hasCompletedResult = false;
-                    outputTextBox.Clear();
-                    ClearSortHistory();
-                    RenderElements(currentValues, -1, -1, idleColor, Color.White);
+                    return;
                 }
+
+                Button button = sender as Button;
+                int index = elementButtons.IndexOf(button);
+                if (index < 0 || index >= currentValues.Length)
+                {
+                    return;
+                }
+
+                using (ValuePromptForm prompt = new ValuePromptForm(GetText("EditValueTitle"), GetText("EditValuePrompt"), currentValues[index], GetText("OkButton"), GetText("CancelButton")))
+                {
+                    if (prompt.ShowDialog(this) == DialogResult.OK)
+                    {
+                        currentValues[index] = prompt.Value;
+                        originalInputValues = currentValues.ToArray();
+                        isInputPlaceholderActive = false;
+                        inputTextBox.ForeColor = SystemColors.WindowText;
+                        inputTextBox.Text = string.Join(", ", currentValues);
+                        hasCompletedResult = false;
+                        outputTextBox.Clear();
+                        ClearSortHistory();
+                        RenderElements(currentValues, -1, -1, idleColor, Color.White);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorEditSelectedValue", ex);
             }
         }
 
@@ -947,18 +1060,25 @@ namespace SortingApp_CS
 
         private void ViewCodeButton_Click(object sender, EventArgs e)
         {
-            AlgorithmInfo algorithm = algorithmComboBox.SelectedItem as AlgorithmInfo;
-            if (algorithm == null)
+            try
             {
-                return;
-            }
+                AlgorithmInfo algorithm = algorithmComboBox.SelectedItem as AlgorithmInfo;
+                if (algorithm == null)
+                {
+                    return;
+                }
 
-            using (PseudoCodeForm form = new PseudoCodeForm(
-                string.Format(CultureInfo.CurrentCulture, GetText("PseudoCodeTitleFormat"), algorithm.DisplayName),
-                GetPseudoCode(algorithm.Code),
-                GetText("CloseButton")))
+                using (PseudoCodeForm form = new PseudoCodeForm(
+                    string.Format(CultureInfo.CurrentCulture, GetText("PseudoCodeTitleFormat"), algorithm.DisplayName),
+                    GetPseudoCode(algorithm.Code),
+                    GetText("CloseButton")))
+                {
+                    form.ShowDialog(this);
+                }
+            }
+            catch (Exception ex)
             {
-                form.ShowDialog(this);
+                ShowOperationError("ErrorOpenPseudoCode", ex);
             }
         }
 
@@ -983,45 +1103,91 @@ namespace SortingApp_CS
                         + "    array[j + 1] = key";
                 case SortingAlgorithmCode.MergeSort:
                     return "MergeSort(array, left, right)\r\n"
-                        + "  if left >= right return\r\n"
+                        + "  if left >= right\r\n"
+                        + "    return\r\n"
                         + "  middle = (left + right) / 2\r\n"
                         + "  MergeSort(array, left, middle)\r\n"
                         + "  MergeSort(array, middle + 1, right)\r\n"
-                        + "  Merge two sorted halves";
+                        + "  Merge(array, left, middle, right)\r\n\r\n"
+                        + "Merge(array, left, middle, right)\r\n"
+                        + "  copy left half into tempLeft\r\n"
+                        + "  copy right half into tempRight\r\n"
+                        + "  while both temp arrays still have values\r\n"
+                        + "    write the smaller value back to array\r\n"
+                        + "  copy any remaining values back to array";
                 case SortingAlgorithmCode.QuickSort:
                     return "QuickSort(array, low, high)\r\n"
-                        + "  if low >= high return\r\n"
+                        + "  if low >= high\r\n"
+                        + "    return\r\n"
                         + "  pivotIndex = Partition(array, low, high)\r\n"
                         + "  QuickSort(array, low, pivotIndex - 1)\r\n"
                         + "  QuickSort(array, pivotIndex + 1, high)\r\n\r\n"
                         + "Partition(array, low, high)\r\n"
                         + "  pivot = array[high]\r\n"
-                        + "  move smaller values before pivot\r\n"
-                        + "  place pivot in final position";
+                        + "  i = low - 1\r\n"
+                        + "  for j = low to high - 1\r\n"
+                        + "    if array[j] <= pivot\r\n"
+                        + "      i = i + 1\r\n"
+                        + "      swap array[i], array[j]\r\n"
+                        + "  swap array[i + 1], array[high]\r\n"
+                        + "  return i + 1";
                 case SortingAlgorithmCode.HeapSort:
                     return "HeapSort(array)\r\n"
-                        + "  Build max heap\r\n"
+                        + "  for i = n / 2 - 1 down to 0\r\n"
+                        + "    Heapify(array, n, i)\r\n"
                         + "  for end = n - 1 down to 1\r\n"
                         + "    swap array[0], array[end]\r\n"
-                        + "    Heapify(array, 0, end)";
+                        + "    Heapify(array, end, 0)\r\n\r\n"
+                        + "Heapify(array, heapSize, root)\r\n"
+                        + "  largest = root\r\n"
+                        + "  left = 2 * root + 1\r\n"
+                        + "  right = 2 * root + 2\r\n"
+                        + "  update largest if left or right child is bigger\r\n"
+                        + "  if largest != root\r\n"
+                        + "    swap array[root], array[largest]\r\n"
+                        + "    Heapify(array, heapSize, largest)";
                 case SortingAlgorithmCode.RadixSort:
                     return "RadixSort(array)\r\n"
-                        + "  shift values if negative numbers exist\r\n"
+                        + "  offset = absolute value of minimum if minimum < 0 else 0\r\n"
+                        + "  if offset > 0\r\n"
+                        + "    add offset to every value\r\n"
+                        + "  maxValue = maximum value in array\r\n"
                         + "  for exponent = 1; max / exponent > 0; exponent *= 10\r\n"
                         + "    CountingSortByDigit(array, exponent)\r\n"
-                        + "  restore shifted values";
+                        + "  if offset > 0\r\n"
+                        + "    subtract offset from every value\r\n\r\n"
+                        + "CountingSortByDigit(array, exponent)\r\n"
+                        + "  count occurrences of current digit 0..9\r\n"
+                        + "  convert count into positions\r\n"
+                        + "  build output array from right to left\r\n"
+                        + "  copy output back to array";
                 case SortingAlgorithmCode.CountingSort:
                     return "CountingSort(array)\r\n"
-                        + "  find minimum and maximum\r\n"
-                        + "  create count array\r\n"
-                        + "  count each value\r\n"
-                        + "  write values back in sorted order";
+                        + "  minValue = minimum value in array\r\n"
+                        + "  maxValue = maximum value in array\r\n"
+                        + "  create count array of size maxValue - minValue + 1\r\n"
+                        + "  for each value in array\r\n"
+                        + "    count[value - minValue] = count[value - minValue] + 1\r\n"
+                        + "  index = 0\r\n"
+                        + "  for i = 0 to count.Length - 1\r\n"
+                        + "    while count[i] > 0\r\n"
+                        + "      array[index] = i + minValue\r\n"
+                        + "      index = index + 1\r\n"
+                        + "      count[i] = count[i] - 1";
                 case SortingAlgorithmCode.IntroSort:
                     return "IntroSort(array)\r\n"
                         + "  depthLimit = 2 * log2(n)\r\n"
-                        + "  QuickSort while depthLimit is safe\r\n"
-                        + "  use HeapSort when depthLimit reaches zero\r\n"
-                        + "  use InsertionSort for small partitions";
+                        + "  IntroSortUtil(array, 0, n - 1, depthLimit)\r\n\r\n"
+                        + "IntroSortUtil(array, low, high, depthLimit)\r\n"
+                        + "  if high - low + 1 <= smallThreshold\r\n"
+                        + "    InsertionSortRange(array, low, high)\r\n"
+                        + "    return\r\n"
+                        + "  if depthLimit == 0\r\n"
+                        + "    HeapSortRange(array, low, high)\r\n"
+                        + "    return\r\n"
+                        + "  pivotIndex = Partition(array, low, high)\r\n"
+                        + "  IntroSortUtil(array, low, pivotIndex - 1, depthLimit - 1)\r\n"
+                        + "  IntroSortUtil(array, pivotIndex + 1, high, depthLimit - 1)";
                 case SortingAlgorithmCode.SelectionSort:
                     return "SelectionSort(array)\r\n"
                         + "  for i = 0 to n - 2\r\n"
@@ -1032,43 +1198,102 @@ namespace SortingApp_CS
                         + "    swap array[i], array[minIndex]";
                 case SortingAlgorithmCode.CocktailSort:
                     return "CocktailSort(array)\r\n"
-                        + "  repeat while swapped\r\n"
-                        + "    scan left to right and swap adjacent inversions\r\n"
-                        + "    scan right to left and swap adjacent inversions";
+                        + "  start = 0\r\n"
+                        + "  end = n - 1\r\n"
+                        + "  swapped = true\r\n"
+                        + "  while swapped\r\n"
+                        + "    swapped = false\r\n"
+                        + "    for i = start to end - 1\r\n"
+                        + "      if array[i] > array[i + 1]\r\n"
+                        + "        swap array[i], array[i + 1]\r\n"
+                        + "        swapped = true\r\n"
+                        + "    if not swapped\r\n"
+                        + "      break\r\n"
+                        + "    swapped = false\r\n"
+                        + "    end = end - 1\r\n"
+                        + "    for i = end - 1 down to start\r\n"
+                        + "      if array[i] > array[i + 1]\r\n"
+                        + "        swap array[i], array[i + 1]\r\n"
+                        + "        swapped = true\r\n"
+                        + "    start = start + 1";
                 case SortingAlgorithmCode.CombSort:
                     return "CombSort(array)\r\n"
                         + "  gap = n\r\n"
+                        + "  shrinkFactor = 1.3\r\n"
+                        + "  swapped = true\r\n"
                         + "  while gap > 1 or swapped\r\n"
-                        + "    gap = gap / shrinkFactor\r\n"
-                        + "    compare and swap elements separated by gap";
+                        + "    gap = floor(gap / shrinkFactor)\r\n"
+                        + "    if gap < 1\r\n"
+                        + "      gap = 1\r\n"
+                        + "    swapped = false\r\n"
+                        + "    for i = 0 to n - gap - 1\r\n"
+                        + "      if array[i] > array[i + gap]\r\n"
+                        + "        swap array[i], array[i + gap]\r\n"
+                        + "        swapped = true";
                 case SortingAlgorithmCode.GnomeSort:
                     return "GnomeSort(array)\r\n"
                         + "  index = 0\r\n"
                         + "  while index < n\r\n"
-                        + "    if current pair is ordered move right\r\n"
-                        + "    otherwise swap and move left";
+                        + "    if index == 0 or array[index] >= array[index - 1]\r\n"
+                        + "      index = index + 1\r\n"
+                        + "    else\r\n"
+                        + "      swap array[index], array[index - 1]\r\n"
+                        + "      index = index - 1";
                 case SortingAlgorithmCode.OddEvenSort:
                     return "OddEvenSort(array)\r\n"
-                        + "  repeat until sorted\r\n"
-                        + "    compare odd-even adjacent pairs\r\n"
-                        + "    compare even-odd adjacent pairs";
+                        + "  sorted = false\r\n"
+                        + "  while not sorted\r\n"
+                        + "    sorted = true\r\n"
+                        + "    for i = 1 to n - 2 step 2\r\n"
+                        + "      if array[i] > array[i + 1]\r\n"
+                        + "        swap array[i], array[i + 1]\r\n"
+                        + "        sorted = false\r\n"
+                        + "    for i = 0 to n - 2 step 2\r\n"
+                        + "      if array[i] > array[i + 1]\r\n"
+                        + "        swap array[i], array[i + 1]\r\n"
+                        + "        sorted = false";
                 case SortingAlgorithmCode.ShellSort:
                     return "ShellSort(array)\r\n"
                         + "  gap = n / 2\r\n"
                         + "  while gap > 0\r\n"
-                        + "    insertion sort elements separated by gap\r\n"
+                        + "    for i = gap to n - 1\r\n"
+                        + "      temp = array[i]\r\n"
+                        + "      j = i\r\n"
+                        + "      while j >= gap and array[j - gap] > temp\r\n"
+                        + "        array[j] = array[j - gap]\r\n"
+                        + "        j = j - gap\r\n"
+                        + "      array[j] = temp\r\n"
                         + "    gap = gap / 2";
                 case SortingAlgorithmCode.CycleSort:
                     return "CycleSort(array)\r\n"
-                        + "  for each cycle start\r\n"
-                        + "    count smaller values to find final position\r\n"
-                        + "    rotate values until cycle returns to start";
+                        + "  for cycleStart = 0 to n - 2\r\n"
+                        + "    item = array[cycleStart]\r\n"
+                        + "    position = cycleStart\r\n"
+                        + "    for i = cycleStart + 1 to n - 1\r\n"
+                        + "      if array[i] < item\r\n"
+                        + "        position = position + 1\r\n"
+                        + "    if position == cycleStart\r\n"
+                        + "      continue\r\n"
+                        + "    while item == array[position]\r\n"
+                        + "      position = position + 1\r\n"
+                        + "    swap item with array[position]\r\n"
+                        + "    while position != cycleStart\r\n"
+                        + "      recompute position for item\r\n"
+                        + "      skip duplicates\r\n"
+                        + "      swap item with array[position]";
                 case SortingAlgorithmCode.PancakeSort:
                     return "PancakeSort(array)\r\n"
                         + "  for currentSize = n down to 2\r\n"
-                        + "    find maximum in prefix\r\n"
-                        + "    flip maximum to front\r\n"
-                        + "    flip it into final position";
+                        + "    maxIndex = index of maximum from 0 to currentSize - 1\r\n"
+                        + "    if maxIndex != currentSize - 1\r\n"
+                        + "      Flip(array, maxIndex)\r\n"
+                        + "      Flip(array, currentSize - 1)\r\n\r\n"
+                        + "Flip(array, end)\r\n"
+                        + "  start = 0\r\n"
+                        + "  while start < end\r\n"
+                        + "    swap array[start], array[end]\r\n"
+                        + "    start = start + 1\r\n"
+                        + "    end = end - 1";
                 case SortingAlgorithmCode.ExchangeSort:
                     return "ExchangeSort(array)\r\n"
                         + "  for i = 0 to n - 2\r\n"
@@ -1077,73 +1302,151 @@ namespace SortingApp_CS
                         + "        swap array[i], array[j]";
                 case SortingAlgorithmCode.BinaryInsertionSort:
                     return "BinaryInsertionSort(array)\r\n"
-                        + "  for each item from left to right\r\n"
-                        + "    binary search insertion position\r\n"
-                        + "    shift larger values right\r\n"
-                        + "    place item";
+                        + "  for i = 1 to n - 1\r\n"
+                        + "    key = array[i]\r\n"
+                        + "    position = BinarySearch(array, key, 0, i - 1)\r\n"
+                        + "    for j = i - 1 down to position\r\n"
+                        + "      array[j + 1] = array[j]\r\n"
+                        + "    array[position] = key\r\n\r\n"
+                        + "BinarySearch(array, key, left, right)\r\n"
+                        + "  while left <= right\r\n"
+                        + "    middle = (left + right) / 2\r\n"
+                        + "    if key < array[middle]\r\n"
+                        + "      right = middle - 1\r\n"
+                        + "    else\r\n"
+                        + "      left = middle + 1\r\n"
+                        + "  return left";
                 case SortingAlgorithmCode.BitonicSort:
                     return "BitonicSort(array)\r\n"
-                        + "  recursively build ascending and descending halves\r\n"
-                        + "  compare distant pairs\r\n"
-                        + "  recursively merge into ascending order";
+                        + "  BitonicSortRecursive(array, 0, n, ascending)\r\n\r\n"
+                        + "BitonicSortRecursive(array, low, count, direction)\r\n"
+                        + "  if count <= 1\r\n"
+                        + "    return\r\n"
+                        + "  k = count / 2\r\n"
+                        + "  BitonicSortRecursive(array, low, k, true)\r\n"
+                        + "  BitonicSortRecursive(array, low + k, k, false)\r\n"
+                        + "  BitonicMerge(array, low, count, direction)\r\n\r\n"
+                        + "BitonicMerge(array, low, count, direction)\r\n"
+                        + "  compare and swap elements in opposite halves\r\n"
+                        + "  recursively merge the first half\r\n"
+                        + "  recursively merge the second half";
                 case SortingAlgorithmCode.StoogeSort:
                     return "StoogeSort(array, left, right)\r\n"
-                        + "  swap endpoints if needed\r\n"
-                        + "  sort first two thirds\r\n"
-                        + "  sort last two thirds\r\n"
-                        + "  sort first two thirds again";
+                        + "  if array[left] > array[right]\r\n"
+                        + "    swap array[left], array[right]\r\n"
+                        + "  if right - left + 1 <= 2\r\n"
+                        + "    return\r\n"
+                        + "  third = (right - left + 1) / 3\r\n"
+                        + "  StoogeSort(array, left, right - third)\r\n"
+                        + "  StoogeSort(array, left + third, right)\r\n"
+                        + "  StoogeSort(array, left, right - third)";
                 case SortingAlgorithmCode.TournamentSort:
                     return "TournamentSort(array)\r\n"
-                        + "  repeatedly find the smallest remaining value\r\n"
-                        + "  append it to output\r\n"
-                        + "  write output back to array";
+                        + "  build a tournament tree from all values\r\n"
+                        + "  for i = 0 to n - 1\r\n"
+                        + "    winner = minimum value stored at tree root\r\n"
+                        + "    output[i] = winner\r\n"
+                        + "    replace winner leaf with infinity\r\n"
+                        + "    update winners on the path back to root\r\n"
+                        + "  copy output back to array";
                 case SortingAlgorithmCode.BucketSort:
                     return "BucketSort(array)\r\n"
-                        + "  distribute values into buckets by range\r\n"
-                        + "  sort each bucket\r\n"
-                        + "  concatenate buckets";
+                        + "  minValue = minimum value in array\r\n"
+                        + "  maxValue = maximum value in array\r\n"
+                        + "  create bucketCount empty buckets\r\n"
+                        + "  for each value in array\r\n"
+                        + "    bucketIndex = map value into bucket range\r\n"
+                        + "    add value to buckets[bucketIndex]\r\n"
+                        + "  sort each bucket individually\r\n"
+                        + "  concatenate all buckets back into array";
                 case SortingAlgorithmCode.PigeonholeSort:
                     return "PigeonholeSort(array)\r\n"
-                        + "  create holes for value range\r\n"
-                        + "  count values in each hole\r\n"
-                        + "  write values back in order";
+                        + "  minValue = minimum value in array\r\n"
+                        + "  maxValue = maximum value in array\r\n"
+                        + "  create holes of size maxValue - minValue + 1\r\n"
+                        + "  for each value in array\r\n"
+                        + "    holes[value - minValue] = holes[value - minValue] + 1\r\n"
+                        + "  index = 0\r\n"
+                        + "  for hole = 0 to holes.Length - 1\r\n"
+                        + "    while holes[hole] > 0\r\n"
+                        + "      array[index] = hole + minValue\r\n"
+                        + "      index = index + 1\r\n"
+                        + "      holes[hole] = holes[hole] - 1";
                 case SortingAlgorithmCode.BeadSort:
                     return "BeadSort(array)\r\n"
-                        + "  represent non-negative values as beads\r\n"
-                        + "  let beads fall by column counts\r\n"
-                        + "  read rows back as sorted values";
+                        + "  require all values to be non-negative\r\n"
+                        + "  create a bead grid with one row per value\r\n"
+                        + "  place beads from column 0 to value - 1 for each row\r\n"
+                        + "  for each column\r\n"
+                        + "    count beads in that column\r\n"
+                        + "    let beads fall to the bottom rows\r\n"
+                        + "  for each row\r\n"
+                        + "    count beads in the row and write that count back";
                 case SortingAlgorithmCode.FlashSort:
                     return "FlashSort(array)\r\n"
-                        + "  classify values into value ranges\r\n"
-                        + "  permute values into classes\r\n"
-                        + "  finish with insertion sort";
+                        + "  choose classCount based on array size\r\n"
+                        + "  find minimum value and maximum value\r\n"
+                        + "  count how many values belong to each class\r\n"
+                        + "  convert counts into class boundaries\r\n"
+                        + "  move values into their correct classes by permutation\r\n"
+                        + "  finish by running InsertionSort on the nearly sorted array";
                 case SortingAlgorithmCode.TimSort:
                     return "TimSort(array)\r\n"
-                        + "  sort small runs with insertion sort\r\n"
-                        + "  merge runs with increasing sizes\r\n"
-                        + "  finish when one sorted run remains";
+                        + "  minRun = ComputeMinRun(n)\r\n"
+                        + "  for start = 0 to n - 1 step minRun\r\n"
+                        + "    end = min(start + minRun - 1, n - 1)\r\n"
+                        + "    InsertionSortRange(array, start, end)\r\n"
+                        + "  size = minRun\r\n"
+                        + "  while size < n\r\n"
+                        + "    for left = 0 to n - 1 step 2 * size\r\n"
+                        + "      middle = left + size - 1\r\n"
+                        + "      right = min(left + 2 * size - 1, n - 1)\r\n"
+                        + "      if middle < right\r\n"
+                        + "        Merge(array, left, middle, right)\r\n"
+                        + "    size = size * 2";
                 case SortingAlgorithmCode.DoubleSelectionSort:
                     return "DoubleSelectionSort(array)\r\n"
                         + "  left = 0, right = n - 1\r\n"
                         + "  while left < right\r\n"
-                        + "    find minimum and maximum in the active range\r\n"
-                        + "    move minimum to left and maximum to right\r\n"
+                        + "    minIndex = left, maxIndex = right\r\n"
+                        + "    for i = left to right\r\n"
+                        + "      update minIndex if array[i] is smaller\r\n"
+                        + "      update maxIndex if array[i] is bigger\r\n"
+                        + "    swap array[left], array[minIndex]\r\n"
+                        + "    if maxIndex == left\r\n"
+                        + "      maxIndex = minIndex\r\n"
+                        + "    swap array[right], array[maxIndex]\r\n"
                         + "    shrink the active range";
                 case SortingAlgorithmCode.TreeSort:
                     return "TreeSort(array)\r\n"
-                        + "  insert every value into a binary search tree\r\n"
-                        + "  traverse the tree in order\r\n"
-                        + "  write sorted values back";
+                        + "  root = null\r\n"
+                        + "  for each value in array\r\n"
+                        + "    root = InsertIntoTree(root, value)\r\n"
+                        + "  index = 0\r\n"
+                        + "  InOrderTraverse(root, array, ref index)\r\n\r\n"
+                        + "InsertIntoTree(node, value)\r\n"
+                        + "  if node is null\r\n"
+                        + "    return new node(value)\r\n"
+                        + "  insert value into left or right child\r\n"
+                        + "  return node";
                 case SortingAlgorithmCode.PatienceSort:
                     return "PatienceSort(array)\r\n"
-                        + "  place values onto ordered piles\r\n"
-                        + "  repeatedly take the smallest pile top\r\n"
-                        + "  write extracted values back";
+                        + "  create an empty list of piles\r\n"
+                        + "  for each value in array\r\n"
+                        + "    place value on the leftmost pile whose top >= value\r\n"
+                        + "    if no such pile exists, create a new pile\r\n"
+                        + "  build a min-heap from all pile tops\r\n"
+                        + "  while heap is not empty\r\n"
+                        + "    take the smallest top value and write it to array\r\n"
+                        + "    if that pile still has values, push its new top into heap";
                 case SortingAlgorithmCode.StrandSort:
                     return "StrandSort(array)\r\n"
-                        + "  pull increasing strands from input\r\n"
-                        + "  merge each strand into output\r\n"
-                        + "  repeat until input is empty";
+                        + "  output = empty list\r\n"
+                        + "  while input is not empty\r\n"
+                        + "    strand = first value from input\r\n"
+                        + "    move every next increasing value from input into strand\r\n"
+                        + "    output = Merge(output, strand)\r\n"
+                        + "  copy output back to array";
                 default:
                     return string.Empty;
             }
@@ -1164,29 +1467,36 @@ namespace SortingApp_CS
 
         private void ExportButton_Click(object sender, EventArgs e)
         {
-            if (!hasCompletedResult || sortedValues.Length == 0)
+            try
             {
-                MessageBox.Show(GetText("ExportNoResult"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            using (SaveFileDialog dialog = new SaveFileDialog())
-            {
-                dialog.Title = GetText("TextDialogTitle");
-                dialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*";
-                dialog.FileName = "sorting-report.txt";
-
-                if (dialog.ShowDialog(this) != DialogResult.OK)
+                if (!hasCompletedResult || sortedValues.Length == 0)
                 {
+                    MessageBox.Show(GetText("ExportNoResult"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 
-                AlgorithmInfo algorithm = algorithmComboBox.SelectedItem as AlgorithmInfo;
-                string algorithmName = algorithm == null ? string.Empty : algorithm.DisplayName;
-                string report = BuildTextReport(algorithmName);
+                using (SaveFileDialog dialog = new SaveFileDialog())
+                {
+                    dialog.Title = GetText("TextDialogTitle");
+                    dialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*";
+                    dialog.FileName = "sorting-report.txt";
 
-                File.WriteAllText(dialog.FileName, report, Encoding.UTF8);
-                MessageBox.Show(GetText("ExportSuccess"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    if (dialog.ShowDialog(this) != DialogResult.OK)
+                    {
+                        return;
+                    }
+
+                    AlgorithmInfo algorithm = algorithmComboBox.SelectedItem as AlgorithmInfo;
+                    string algorithmName = algorithm == null ? string.Empty : algorithm.DisplayName;
+                    string report = BuildTextReport(algorithmName);
+
+                    File.WriteAllText(dialog.FileName, report, Encoding.UTF8);
+                    MessageBox.Show(GetText("ExportSuccess"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorExportReport", ex);
             }
         }
 
@@ -1212,52 +1522,73 @@ namespace SortingApp_CS
 
         private void CategoryComboBox_SelectedIndexChanged(object sender, EventArgs e)
         {
-            CategoryInfo category = categoryComboBox.SelectedItem as CategoryInfo;
-            if (category != null)
+            try
             {
-                PopulateAlgorithmComboBox(category.Key);
+                CategoryInfo category = categoryComboBox.SelectedItem as CategoryInfo;
+                if (category != null)
+                {
+                    PopulateAlgorithmComboBox(category.Key);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorRefreshAlgorithmList", ex);
             }
         }
 
         private void LanguageComboBox_SelectedIndexChanged(object sender, EventArgs e)
         {
-            LanguageInfo language = languageComboBox.SelectedItem as LanguageInfo;
-            if (language == null)
+            try
             {
-                return;
-            }
+                LanguageInfo language = languageComboBox.SelectedItem as LanguageInfo;
+                if (language == null)
+                {
+                    return;
+                }
 
-            currentLanguageCode = language.Code;
-            ApplyLocalization();
-            languageComboBox.Invalidate();
+                currentLanguageCode = language.Code;
+                ApplyLocalization();
+                languageComboBox.Invalidate();
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError("ErrorChangeLanguage", ex);
+            }
         }
 
         private void LanguageComboBox_DrawItem(object sender, DrawItemEventArgs e)
         {
-            e.DrawBackground();
-            if (e.Index < 0)
+            try
             {
-                return;
-            }
-
-            LanguageInfo language = (LanguageInfo)languageComboBox.Items[e.Index];
-            Rectangle flagRectangle = new Rectangle(e.Bounds.Left + 6, e.Bounds.Top + 6, 24, 16);
-            string flagPath = ResolvePath(Path.Combine("Resources", "Icons", language.FlagFileName));
-
-            if (File.Exists(flagPath))
-            {
-                using (Image flagImage = Image.FromFile(flagPath))
+                e.DrawBackground();
+                if (e.Index < 0)
                 {
-                    e.Graphics.DrawImage(flagImage, flagRectangle);
+                    return;
                 }
-            }
 
-            using (Brush textBrush = new SolidBrush(e.ForeColor))
+                LanguageInfo language = (LanguageInfo)languageComboBox.Items[e.Index];
+                Rectangle flagRectangle = new Rectangle(e.Bounds.Left + 6, e.Bounds.Top + 6, 24, 16);
+                string flagPath = ResolvePath(Path.Combine("Resources", "Icons", language.FlagFileName));
+
+                if (File.Exists(flagPath))
+                {
+                    using (Image flagImage = Image.FromFile(flagPath))
+                    {
+                        e.Graphics.DrawImage(flagImage, flagRectangle);
+                    }
+                }
+
+                using (Brush textBrush = new SolidBrush(e.ForeColor))
+                {
+                    e.Graphics.DrawString(language.Name, e.Font, textBrush, e.Bounds.Left + 38, e.Bounds.Top + 6);
+                }
+
+                e.DrawFocusRectangle();
+            }
+            catch (Exception ex)
             {
-                e.Graphics.DrawString(language.Name, e.Font, textBrush, e.Bounds.Left + 38, e.Bounds.Top + 6);
+                ShowOperationError("ErrorDrawLanguageSelector", ex, false);
             }
-
-            e.DrawFocusRectangle();
         }
 
         private void SetSortingState(bool sorting)
@@ -1273,6 +1604,58 @@ namespace SortingApp_CS
             languageComboBox.Enabled = !sorting;
             speedNumericUpDown.Enabled = !sorting;
             viewCodeButton.Enabled = !sorting;
+        }
+
+        private void ShowOperationError(string messageKey, Exception exception)
+        {
+            ShowOperationError(messageKey, exception, true);
+        }
+
+        private void ShowOperationError(string messageKey, Exception exception, bool showMessageBox)
+        {
+            try
+            {
+                string userMessage = GetText(messageKey);
+
+                if (statusLabel != null && !statusLabel.IsDisposed)
+                {
+                    statusLabel.Text = userMessage;
+                }
+
+                if (showMessageBox &&
+                    (exception == null || !IsExceptionAlreadyReported(exception)) &&
+                    !isFormClosing &&
+                    !IsDisposed)
+                {
+                    string detail = exception == null || string.IsNullOrWhiteSpace(exception.Message)
+                        ? userMessage
+                        : userMessage + Environment.NewLine + Environment.NewLine + exception.Message;
+
+                    MessageBox.Show(detail, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+
+                MarkExceptionAsReported(exception);
+            }
+            catch
+            {
+            }
+        }
+
+        private static bool IsExceptionAlreadyReported(Exception exception)
+        {
+            return exception != null &&
+                   exception.Data.Contains("UserFacingErrorShown") &&
+                   object.Equals(exception.Data["UserFacingErrorShown"], true);
+        }
+
+        private static void MarkExceptionAsReported(Exception exception)
+        {
+            if (exception == null)
+            {
+                return;
+            }
+
+            exception.Data["UserFacingErrorShown"] = true;
         }
 
         private sealed class DoubleBufferedPanel : Panel
